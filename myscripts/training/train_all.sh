@@ -1,0 +1,3 @@
+torchrun --nproc_per_node 1 train.py --cfg-path train_configs/train_image.yaml --eval-dataset image_val --dataset vqav2 --output-dir normal-pretraining --max-epoch 1 --warmup-steps 57688 --iters-per-epoch 147919
+torchrun --nproc_per_node 1 train.py --cfg-path train_configs/train_image.yaml --eval-dataset image_val --dataset vqav2 --output-dir normal-pretraining --max-epoch 1 --warmup-steps 57688 --iters-per-epoch 147919 --swap-order
+x
