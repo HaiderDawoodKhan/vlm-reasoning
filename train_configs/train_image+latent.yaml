@@ -38,6 +38,7 @@ datasets:
         name: "blip_caption"
     sample_ratio: 10
     build_info:
+      dataset_name: scienceqa
       image_path: ../../datasets_image/ScienceQA/images
       ann_path: ../../datasets_image/ScienceQA/train.json
       # image_path: ../../datasets_image/MMMU/images

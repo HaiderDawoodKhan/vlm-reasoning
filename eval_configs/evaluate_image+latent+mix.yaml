@@ -7,15 +7,15 @@ model:
   language_model: meta-llama/Llama-3.2-1B-Instruct
   vision_model: clip
   audio_model: whisper
-  ckpt: OmniMod/ImageFuse/LatentMMMUMix/20250814155/checkpoint_9.pth
+  ckpt: /home/csalt/Haider/DVLM/Trained-Checkpoints/MMMU/MMMU.pth
   use_grad_checkpoint: false
   chat_template: true
   low_resource: true
   lora_r: 64
   lora_alpha: 16
   bits: 8
-  use_coconut: false
-  use_multimodal_coconut: false
+  use_coconut: true
+  use_multimodal_coconut: true
   num_latent_thoughts: 5
   coconut_discount_rate: 1.0
 datasets:

@@ -9,15 +9,18 @@ from torch.utils.data import Dataset
 import torchaudio
 
 class ImageDataset(Dataset):
-    def __init__(self, vis_processor, text_processor, audio_processor, image_root, ann_path, audio_dir=None):
+    def __init__(self, vis_processor, text_processor, audio_processor, image_root, ann_path, audio_dir=None, swap_order=False):
         self.image_root = image_root
         self.audio_dir = audio_dir
         self.vis_processor = vis_processor
         self.text_processor = text_processor
         self.audio_processor = audio_processor
+        self.swap_order = swap_order
 
         with open(ann_path, 'r') as f:
             self.ann = json.load(f)
+            
+        print(f"Loaded {len(self.ann)} samples from {ann_path}")
 
     def __len__(self):
         return len(self.ann)
@@ -36,6 +39,8 @@ class ImageDataset(Dataset):
         answer = info['answer']
         question = info['question']
         instruction = f"<VideoHere>Please analyze step by step: {question}"
+        if self.swap_order:
+            instruction = f"Please analyze step by step: {question}<VideoHere>"
 
         output_data = {
             "image_id": image_id,

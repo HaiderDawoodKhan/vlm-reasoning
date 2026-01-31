@@ -7,7 +7,7 @@ model:
   vision_model: "clip"
   audio_model: "whisper"
   language_model: "meta-llama/Llama-3.2-1B-Instruct"
-  ckpt: OmniMod/ImageFuse/NormalVQAv2/20250807212/checkpoint_1.pth
+  ckpt: null
   use_grad_checkpoint: False
   chat_template: True
   low_resource: True
@@ -25,7 +25,7 @@ model:
 
 datasets:
   image_train:
-    batch_size: 4
+    batch_size: 3
     audio_processor: 
       train:
         name: 'whisper_processor'
@@ -38,6 +38,8 @@ datasets:
         name: "blip_caption"
     sample_ratio: 10
     build_info:
+      swap_order: False
+      dataset_name: mmmu
       # image_path: ../../datasets_image/ScienceQA/images
       # ann_path: ../../datasets_image/ScienceQA/train.json
       image_path: ../../datasets_image/MMMU/images
@@ -57,6 +59,7 @@ run:
   num_workers: 2
   warmup_steps: 5
   iters_per_epoch: 37 # 55470 # total sample 6218/4 (batch size)
+  # 1555,147919
 
   seed: 42
   output_dir: "ImageFuse/NormalMMMU"
@@ -72,7 +75,7 @@ run:
   dist_url: "env://"
   distributed: False
 
-  wandb_log: True
+  wandb_log: False
   wandb_token: 
   job_name: NormalMMMU
 

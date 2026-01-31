@@ -7,7 +7,7 @@ model:
   language_model: meta-llama/Llama-3.2-1B-Instruct
   vision_model: clip
   audio_model: whisper
-  ckpt: OmniMod/ImageFuse/NormalMMMU/20250812203/checkpoint_29.pth
+  ckpt: /home/csalt/Haider/DVLM/Trained-Checkpoints/MMMU/MMMU.pth
   use_grad_checkpoint: false
   chat_template: true
   low_resource: true
@@ -16,7 +16,7 @@ model:
   bits: 8
   use_coconut: false
   use_multimodal_coconut: false
-  num_latent_thoughts: 1
+  num_latent_thoughts: 5
   coconut_discount_rate: 1.0
 datasets:
   image_train:
@@ -31,16 +31,18 @@ datasets:
       train:
         name: blip_caption
     build_info:
-      image_path: ../../datasets_image/MMMU/images
-      ann_path: ../../datasets_image/MMMU/annotation/dev_data.json
+      dataset_name: mmstar
+      image_path: /home/csalt/Haider/DVLM/datasets_image/MMMU/images
+      ann_path: /home/csalt/Haider/DVLM/datasets_image/MMMU/annotation/dev_data.json
       audio_path: None
 evaluation_datasets:
   image_val:
-    image_path: ../../datasets_image/MMMU/images
-    ann_path: ../../datasets_image/MMMU/annotation/validation_data.json
+    dataset_name: mmstar
+    image_path: /home/csalt/Haider/DVLM/datasets_image/MMMU/images
+    ann_path: /home/csalt/Haider/DVLM/datasets_image/MMMU/annotation/dev_data.json
     audio_path: None
     prompt_test: ''
-    batch_size: 4
+    batch_size: 3
     max_new_tokens: 50
     temperature: 0.1
     top_p: 0.9
@@ -48,4 +50,4 @@ evaluation_datasets:
 run:
   task: image_text_pretrain
   name: vqa_rad_evaluation
-  save_path: OmniMod/ImageFuse/NormalMMMU
+  save_path: /home/csalt/Haider/DVLM/OmniMod/ImageFuse/NormalMMMU

@@ -1,12 +1,34 @@
 import json
 import string
 import os
+import argparse
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 from rouge_score import rouge_scorer
 import nltk
 
-# Download required NLTK data
-nltk.download('punkt')
+def parse_args():
+    parser = argparse.ArgumentParser(description="Compute text metrics from an evaluation JSON.")
+    parser.add_argument(
+        "--file-path",
+        required=True,
+        type=str,
+        help="Path to the JSON predictions file (list of dicts with 'predict' and 'ground_truth').",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        type=str,
+        help="Directory to write metrics_output.json (defaults to the directory of --file-path).",
+    )
+    return parser.parse_args()
+
+
+def ensure_nltk_data():
+    """Ensure required NLTK tokenizers are available."""
+    try:
+        nltk.data.find("tokenizers/punkt")
+    except LookupError:
+        nltk.download("punkt", quiet=True)
 
 def normalize_text(text):
     """Normalize text by converting to lowercase and removing punctuation."""
@@ -60,52 +82,18 @@ def calculate_rouge(data):
 
 def save_metrics(metrics, output_dir):
     """Save metrics to a JSON file in the specified directory."""
+    os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, 'metrics_output.json')
     with open(output_path, 'w') as f:
         json.dump(metrics, f, indent=4)
     print(f"Metrics saved to {output_path}")
 
 def main():
-    # File path to the JSON data
-    # file_path = 'OmniMod/ImageFuse/NormalScienceQA/20250808083/result/output_checkpoint_4.json' # 5 epochs
-    # file_path = 'OmniMod/ImageFuse/NormalScienceQA/20250808133/result/output_checkpoint_4.json' # 10 epochs use weight from 20250808083
-    # file_path = 'OmniMod/ImageFuse/NormalScienceQA/20250808190/result/output_checkpoint_4.json' # use the 2epoch weight from VQAv2
+    args = parse_args()
+    ensure_nltk_data()
 
-    # file_path = 'OmniMod/ImageFuse/LatentScienceQA/20250808092/result/output_checkpoint_4.json' # Train coconut test without coconut
-    # file_path = 'OmniMod/ImageFuse/LatentScienceQA/20250808131/result/output_checkpoint_7.json'
-    # file_path = 'OmniMod/ImageFuse/LatentScienceQA/20250808213/result/output_checkpoint_19.json'
-    # file_path = 'OmniMod/ImageFuse/LatentScienceQA/20250809120/result/output_checkpoint_4.json'
-    # file_path = 'OmniMod/ImageFuse/LatentScienceQA/20250810175/result/output_checkpoint_9.json'
-
-    
-    # file_path = 'OmniMod/ImageFuse/LatentScienceQAMix/20250808111/result/output_checkpoint_4.json'
-    # file_path = 'OmniMod/ImageFuse/LatentScienceQAMix/20250808111/result/output_checkpoint_4.json'
-    # file_path = 'OmniMod/ImageFuse/LatentScienceQAMix/20250808213/result/output_checkpoint_19.json'
-    # file_path = 'OmniMod/ImageFuse/LatentScienceQAMix/20250809120/result/output_checkpoint_4.json'
-    # file_path = 'OmniMod/ImageFuse/LatentScienceQAMix/20250810175/result/output_checkpoint_6.json'
-
-    # file_path = 'OmniMod/ImageFuse/LatentScienceQAMix/20250810175/result/output_checkpoint_9.json'
-    
-    # MMMU
-    # file_path = 'OmniMod/ImageFuse/NormalMMMU/20250812194/result/output_checkpoint_9.json'
-    # file_path = 'OmniMod/ImageFuse/NormalMMMU/20250812203/result/output_checkpoint_29.json'
-    
-    # file_path = 'OmniMod/ImageFuse/LatentMMMU/20250812215/result/output_checkpoint_9.json'
-    # file_path = 'OmniMod/ImageFuse/LatentMMMU/20250814155/result/output_checkpoint_9.json' # num_latent_thoughts: 5
-
-    # file_path = 'OmniMod/ImageFuse/LatentMMMUMix/20250813072/result/output_checkpoint_9.json'
-    # file_path = 'OmniMod/ImageFuse/LatentMMMUMix/20250814155/result/output_checkpoint_9.json' # num_latent_thoughts: 5
-    
-
-    ## MMStart
-    # file_path = 'OmniMod/ImageFuse/NormalMMMU/20250812194/result/output_MMStartcheckpoint_9.json'
-    # file_path = 'OmniMod/ImageFuse/LatentMMMU/20250812215/result/output_checkpoint_9.json'
-    # file_path = 'OmniMod/ImageFuse/LatentMMMUMix/20250813072/result/output_checkpoint_9.json'
-    file_path = 'OmniMod/ImageFuse/LatentMMMU/20250814155/result/output_MMStartcheckpoint_9.json'
-    # file_path = 'OmniMod/ImageFuse/LatentMMMUMix/20250814155/result/output_MMStartcheckpoint_9.json'
-    
-    # Output directory for saving metrics
-    output_dir = os.path.dirname(file_path)
+    file_path = args.file_path
+    output_dir = args.output_dir or os.path.dirname(file_path)
     
     # Load data
     data = load_data(file_path)

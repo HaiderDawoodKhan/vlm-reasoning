@@ -126,6 +126,7 @@ class OmniModBase(BaseModel):
         lora_dropout=0.05,
         use_coconut=False,  # Enable LatentReasoning reasoning
         use_multimodal_coconut=False,  # Enable multimodal LatentReasoning (approach 2)
+        use_modified_multinut_with_attention=False,
         num_latent_thoughts=2,  # Number of latent thoughts (n)
         coconut_discount_rate=1.0,  # discount/encourage rate (γ = 0.9 for discounting, γ = 1.1 for encouraging)
         mu=0.3,
@@ -147,6 +148,7 @@ class OmniModBase(BaseModel):
         self.use_coconut = use_coconut
         self.num_latent_thoughts = num_latent_thoughts
         self.use_multimodal_coconut = use_multimodal_coconut
+        self.use_modified_multinut_with_attention = use_modified_multinut_with_attention
         self.coconut_discount_rate = coconut_discount_rate  # Store discount/encourage rate
         self.mu = mu # Weight auxiliary loss
 
@@ -179,7 +181,7 @@ class OmniModBase(BaseModel):
         self.cross_modal_attn = CrossModalAttention(dim=DIM, num_heads=8)
         
         # Initialize multimodal latent attention for approach 2
-        if self.use_multimodal_coconut:
+        if self.use_multimodal_coconut or self.use_modified_multinut_with_attention:
             self.llm_hidden_dim = self.language_model.config.hidden_size 
             self.multimodal_latent_attn = MultimodalLatentAttention(
                 llm_hidden_dim=self.llm_hidden_dim, mixed_dim=DIM, num_heads=8)
@@ -229,7 +231,15 @@ class OmniModBase(BaseModel):
                 for i, video_emb in enumerate(video_list)
             ]
         interleaved_embs = [emb for pair in zip(seg_embs[:-1], mixed_embs) for emb in pair] + [seg_embs[-1]]
-        return torch.cat(interleaved_embs, dim=1), mixed_embs
+
+        # Track which positions correspond to image/video embeddings (1) vs text embeddings (0).
+        interleaved_masks = []
+        for seg_emb, mixed_emb in zip(seg_embs[:-1], mixed_embs):
+            interleaved_masks.append(torch.zeros([1, seg_emb.shape[1]], dtype=torch.int, device=device))
+            interleaved_masks.append(torch.ones([1, mixed_emb.shape[1]], dtype=torch.int, device=device))
+        interleaved_masks.append(torch.zeros([1, seg_embs[-1].shape[1]], dtype=torch.int, device=device))
+
+        return torch.cat(interleaved_embs, dim=1), mixed_embs, torch.cat(interleaved_masks, dim=1)
     
     def pad_mixed_embeds(self, mixed_embs_list):
         """Pad mixed embeddings to the maximum sequence length in the batch."""
@@ -263,6 +273,7 @@ class OmniModBase(BaseModel):
         """Wrap prompts with mixed video and audio embeddings for video VQA."""
         emb_lists = []
         mixed_embs_list = []
+        img_token_mask_list = []
         audio_iter = audio_embeds if audio_embeds is not None else [None] * len(video_embeds)
         for idx, (v_emb, prompt, a_emb) in enumerate(zip(video_embeds, prompts, audio_iter)):
             pn = v_emb.shape[-2]
@@ -271,6 +282,7 @@ class OmniModBase(BaseModel):
             mixed_emb = self.mix_video_audio(v_emb, a_emb)
             p_segs = prompt.split('<VideoHere>')
             interleave_emb = []
+            interleave_mask = []
             for inner_idx, seg in enumerate(p_segs[:-1]):
                 p_tokens = self.language_tokenizer(seg, return_tensors="pt", add_special_tokens=False).to(video_embeds.device)
                 p_embed = self.embed_tokens(p_tokens.input_ids)
@@ -278,6 +290,8 @@ class OmniModBase(BaseModel):
                 start = inner_idx * segment_length
                 end = (inner_idx + 1) * segment_length
                 mixed_segment = mixed_emb[:, start:end] if start < mixed_emb.shape[1] else mixed_emb[:, -pn:]
+                interleave_mask.append(torch.zeros([1, p_embed.shape[1]], dtype=torch.int, device=video_embeds.device))
+                interleave_mask.append(torch.ones([1, mixed_segment.shape[1]], dtype=torch.int, device=video_embeds.device))
                 interleave_emb.append(torch.cat([p_embed, mixed_segment], dim=1))
             wrapped_emb = torch.cat(interleave_emb, dim=1)
             p_tokens = self.language_tokenizer(p_segs[-1], return_tensors="pt", add_special_tokens=False).to(video_embeds.device)
@@ -285,6 +299,8 @@ class OmniModBase(BaseModel):
             wrapped_emb = torch.cat([wrapped_emb, p_embed], dim=1)
             emb_lists.append(wrapped_emb)
             mixed_embs_list.append(mixed_emb)
+            interleave_mask.append(torch.zeros([1, p_embed.shape[1]], dtype=torch.int, device=video_embeds.device))
+            img_token_mask_list.append(torch.cat(interleave_mask, dim=1))
         # print('prompt_wrap - mixed_embs_list: ', len(mixed_embs_list))
 
         emb_lens = [emb.shape[1] for emb in emb_lists]
@@ -292,15 +308,76 @@ class OmniModBase(BaseModel):
         max_length = min(max(emb_lens), self.max_context_len)
         wrapped_embs = pad_emb.expand(len(emb_lens), max_length, -1).clone()
         wrapped_atts = torch.zeros([len(emb_lens), max_length], dtype=torch.int, device=video_embeds.device)
+        wrapped_img_token_mask = torch.zeros([len(emb_lens), max_length], dtype=torch.int, device=video_embeds.device)
         for i, emb in enumerate(emb_lists):
             length = min(emb_lens[i], self.max_context_len)
             wrapped_embs[i, :length] = emb[:, :length]
             wrapped_atts[i, :length] = 1
+            wrapped_img_token_mask[i, :length] = img_token_mask_list[i][:, :length]
 
         # Pad mixed_embs_list for multimodal LatentReasoning
         padded_mixed_embs = self.pad_mixed_embeds(mixed_embs_list)
         # padded_mixed_embs = self.pad_mixed_embeds(mixed_embs_list, len(prompts))
-        return wrapped_embs, wrapped_atts, padded_mixed_embs
+        return wrapped_embs, wrapped_atts, padded_mixed_embs, wrapped_img_token_mask
+
+    def concat_mask_input_output(self, input_mask, input_atts, output_mask, output_atts):
+        """Concat boolean/int masks in the same way as concat_emb_input_output."""
+        cat_masks = []
+        for i in range(input_mask.size(0)):
+            input_len = input_atts[i].sum()
+            cat_masks.append(
+                torch.cat(
+                    [
+                        input_mask[i][:input_len],
+                        output_mask[i],
+                        input_mask[i][input_len:],
+                    ]
+                )
+            )
+        return torch.stack(cat_masks)
+
+    def get_last_hidden_and_img_context(self, inputs_embeds, attention_mask, img_token_mask):
+        """Return (last_hidden, img_hidden_states_padded) from the LLM's last layer."""
+        with self.maybe_autocast():
+            outputs = self.language_model(
+                inputs_embeds=inputs_embeds,
+                attention_mask=attention_mask,
+                return_dict=True,
+                output_hidden_states=True,
+            )
+
+        last_hidden_state = outputs.hidden_states[-1]  # [B, T, D]
+        batch_size, _, hidden_dim = last_hidden_state.shape
+
+        last_positions = attention_mask.sum(dim=1) - 1
+        last_hidden = torch.gather(
+            last_hidden_state,
+            dim=1,
+            index=last_positions.unsqueeze(1).unsqueeze(2).expand(-1, 1, hidden_dim),
+        ).squeeze(1)
+
+        img_valid = (img_token_mask > 0) & (attention_mask > 0)
+        per_sample = []
+        max_len = 0
+        for i in range(batch_size):
+            idxs = torch.nonzero(img_valid[i], as_tuple=False).squeeze(1)
+            if idxs.numel() == 0:
+                # No image tokens: keep a single token to avoid empty attention.
+                per = last_hidden_state[i : i + 1, last_positions[i] : last_positions[i] + 1, :].squeeze(0)
+            else:
+                per = last_hidden_state[i, idxs, :]
+            per_sample.append(per)
+            max_len = max(max_len, per.shape[0])
+
+        img_ctx = torch.zeros(
+            [batch_size, max_len, hidden_dim],
+            dtype=last_hidden_state.dtype,
+            device=last_hidden_state.device,
+        )
+        for i, per in enumerate(per_sample):
+            img_ctx[i, : per.shape[0], :] = per
+
+        return last_hidden, img_ctx
 
     def concat_emb_input_output(self, input_embs, input_atts, output_embs, output_atts):
         input_lens = []
@@ -379,7 +456,9 @@ class OmniModBase(BaseModel):
             conv_q = [q.split(connect_sym) for q in conv_q]
             conv_a = [a.split(connect_sym) for a in conv_a]
             conv_q = [[self.prompt_template.format(item) for item in items] for items in conv_q]
-            cond_embeds, cond_atts, padded_mixed_embs = self.prompt_wrap(img_embeds, audio_embeds, img_atts, [q[0] for q in conv_q])
+            cond_embeds, cond_atts, padded_mixed_embs, cond_img_token_mask = self.prompt_wrap(
+                img_embeds, audio_embeds, img_atts, [q[0] for q in conv_q]
+            )
             regress_token_ids, regress_atts, part_targets = self.tokenize_conversation(conv_q, conv_a)
         else:
             if "instruction_input" in samples:
@@ -391,9 +470,13 @@ class OmniModBase(BaseModel):
             if hasattr(self, 'chat_template') and self.chat_template:
                 instruction = [self.prompt_template.format(instruct) for instruct in instruction]
             if 'length' in samples:
-                cond_embeds, cond_atts, padded_mixed_embs = self.prompt_wrap(img_embeds, audio_embeds, img_atts, instruction, samples['length'])
+                cond_embeds, cond_atts, padded_mixed_embs, cond_img_token_mask = self.prompt_wrap(
+                    img_embeds, audio_embeds, img_atts, instruction, samples['length']
+                )
             else:
-                cond_embeds, cond_atts, padded_mixed_embs = self.prompt_wrap(img_embeds, audio_embeds, img_atts, instruction)
+                cond_embeds, cond_atts, padded_mixed_embs, cond_img_token_mask = self.prompt_wrap(
+                    img_embeds, audio_embeds, img_atts, instruction
+                )
 
             ### prepare target tokens
             self.language_tokenizer.padding_side = "right"
@@ -415,7 +498,15 @@ class OmniModBase(BaseModel):
             )
 
         regress_embeds = self.embed_tokens(regress_token_ids)
-        return cond_embeds, cond_atts, regress_embeds, regress_atts, part_targets, padded_mixed_embs
+        return (
+            cond_embeds,
+            cond_atts,
+            cond_img_token_mask,
+            regress_embeds,
+            regress_atts,
+            part_targets,
+            padded_mixed_embs,
+        )
 
     def get_last_hidden_state(self, inputs_embeds, attention_mask):
         """Extract the last hidden state from the LLM."""
@@ -440,15 +531,33 @@ class OmniModBase(BaseModel):
 
     def forward(self, samples, reduction='mean'):
         """Run the training forward pass with optional LatentReasoning latent reasoning."""
-        cond_embeds, cond_atts, regress_embeds, regress_atts, part_targets, padded_mixed_embs = \
-            self.preparing_embedding(samples)
+        (
+            cond_embeds,
+            cond_atts,
+            cond_img_token_mask,
+            regress_embeds,
+            regress_atts,
+            part_targets,
+            padded_mixed_embs,
+        ) = self.preparing_embedding(samples)
         inputs_embeds, attention_mask, input_lens = \
             self.concat_emb_input_output(cond_embeds, cond_atts, regress_embeds, regress_atts)
+
+        # Track which tokens are image tokens after concatenation.
+        output_img_token_mask = torch.zeros_like(regress_atts, dtype=torch.int, device=self.device)
+        img_token_mask = self.concat_mask_input_output(
+            cond_img_token_mask, cond_atts, output_img_token_mask, regress_atts
+        )
+
         bos = torch.ones_like(part_targets[:, :1]) * self.language_tokenizer.bos_token_id
         bos_embeds = self.embed_tokens(bos)
         bos_atts = cond_atts[:, :1]
         inputs_embeds = torch.cat([bos_embeds, inputs_embeds], dim=1)
         attention_mask = torch.cat([bos_atts, attention_mask], dim=1)
+        img_token_mask = torch.cat(
+            [torch.zeros([img_token_mask.shape[0], 1], dtype=torch.int, device=self.device), img_token_mask],
+            dim=1,
+        )
         targets = torch.ones([inputs_embeds.shape[0], inputs_embeds.shape[1]],
                              dtype=torch.long).to(self.device).fill_(-100)
         for i, target in enumerate(part_targets):
@@ -472,6 +581,7 @@ class OmniModBase(BaseModel):
             latent_embeds = inputs_embeds
             latent_attention_mask = attention_mask
             latent_targets = targets.clone()
+            latent_img_token_mask = img_token_mask
             total_loss = 0.0
 
             # bot_embeds = self.embed_tokens(
@@ -485,13 +595,20 @@ class OmniModBase(BaseModel):
                 with self.maybe_autocast():
                     if thought_idx < self.num_latent_thoughts:
                         # Latent mode: get last hidden state and append <bot> token
-                        last_hidden = self.get_last_hidden_state(latent_embeds, latent_attention_mask)
+                        if self.use_modified_multinut_with_attention:
+                            last_hidden, img_ctx = self.get_last_hidden_and_img_context(
+                                latent_embeds, latent_attention_mask, latent_img_token_mask
+                            )
+                        else:
+                            last_hidden = self.get_last_hidden_state(latent_embeds, latent_attention_mask)
 
                         # Apply discount/encourage rate: γ^thought_idx
                         gamma = self.coconut_discount_rate ** thought_idx
                         last_hidden = last_hidden * gamma
 
-                        if self.use_multimodal_coconut:
+                        if self.use_modified_multinut_with_attention:
+                            thought_emb = self.multimodal_latent_attn(last_hidden, img_ctx)
+                        elif self.use_multimodal_coconut:
                             # print('Forward - LatentReasoning + MultiMix')
                             # Combine hidden state with mixed embeddings
                             thought_emb = self.multimodal_latent_attn(last_hidden, padded_mixed_embs)
@@ -504,6 +621,10 @@ class OmniModBase(BaseModel):
                         latent_attention_mask = torch.cat(
                             [latent_attention_mask, torch.ones([batch_size, 1], dtype=torch.int, device=self.device)],
                             dim=1
+                        )
+                        latent_img_token_mask = torch.cat(
+                            [latent_img_token_mask, torch.zeros([batch_size, 1], dtype=torch.int, device=self.device)],
+                            dim=1,
                         )
                         latent_targets = torch.cat(
                             [latent_targets, torch.ones([batch_size, 1], dtype=torch.long, device=self.device) * -100],
@@ -581,12 +702,14 @@ class OmniModBase(BaseModel):
 
       # Flatten mixed_embs_list to handle nested lists
         mixed_embs_list = []
+        img_token_masks = []
         for emb in batch_embs:
             mixed_embs = emb[1]
             if isinstance(mixed_embs, list):
                 mixed_embs_list.extend(mixed_embs)
             else:
                 mixed_embs_list.append(mixed_embs)
+            img_token_masks.append(emb[2])
 
         batch_embs = [emb[0] for emb in batch_embs]  # Extract context embeddings
         max_len = max([emb.shape[1] for emb in batch_embs])
@@ -595,16 +718,19 @@ class OmniModBase(BaseModel):
         device = batch_embs[0].device
         embs = torch.zeros([batch_size, max_len, emb_dim], dtype=dtype, device=device)
         attn_mask = torch.zeros([batch_size, max_len], dtype=torch.int, device=device)
+        img_token_mask = torch.zeros([batch_size, max_len], dtype=torch.int, device=device)
         for i, emb in enumerate(batch_embs):
             emb_len = emb.shape[1]
             embs[i, -emb_len:] = emb[0]
             attn_mask[i, -emb_len:] = 1
+            img_token_mask[i, -emb_len:] = img_token_masks[i][0]
 
 
         bos = torch.ones([batch_size, 1], dtype=torch.long, device=device) * self.language_tokenizer.bos_token_id
         bos_embeds = self.embed_tokens(bos)
         embs = torch.cat([bos_embeds, embs], dim=1)
         attn_mask = torch.cat([torch.ones([batch_size, 1], dtype=torch.int, device=device), attn_mask], dim=1)
+        img_token_mask = torch.cat([torch.zeros([batch_size, 1], dtype=torch.int, device=device), img_token_mask], dim=1)
 
         if not self.use_coconut:
             # print('Generate: Using standard training')
@@ -629,6 +755,7 @@ class OmniModBase(BaseModel):
             # LatentReasoning generation with latent thoughts
             latent_embeds = embs
             latent_attn_mask = attn_mask
+            latent_img_token_mask = img_token_mask
             # print('Generate - mixed_embs_list: ', len(mixed_embs_list))
             padded_mixed_embs = self.pad_mixed_embeds(mixed_embs_list)
             # padded_mixed_embs = self.pad_mixed_embeds(mixed_embs_list).to(dtype=self.multimodal_latent_attn.proj.weight.dtype)
@@ -640,11 +767,18 @@ class OmniModBase(BaseModel):
             # )
 
             for thought_idx in range(self.num_latent_thoughts):
-                last_hidden = self.get_last_hidden_state(latent_embeds, latent_attn_mask)
+                if self.use_modified_multinut_with_attention:
+                    last_hidden, img_ctx = self.get_last_hidden_and_img_context(
+                        latent_embeds, latent_attn_mask, latent_img_token_mask
+                    )
+                else:
+                    last_hidden = self.get_last_hidden_state(latent_embeds, latent_attn_mask)
                 gamma = self.coconut_discount_rate ** thought_idx
                 last_hidden = last_hidden * gamma
 
-                if self.use_multimodal_coconut:
+                if self.use_modified_multinut_with_attention:
+                    thought_emb = self.multimodal_latent_attn(last_hidden, img_ctx)
+                elif self.use_multimodal_coconut:
                     # print('Generate - LatentReasoning + MultiMix')
                     # Combine hidden state with mixed embeddings
                     thought_emb = self.multimodal_latent_attn(last_hidden, padded_mixed_embs)
@@ -655,6 +789,10 @@ class OmniModBase(BaseModel):
                 latent_attn_mask = torch.cat(
                     [latent_attn_mask, torch.ones([batch_size, 1], dtype=torch.int, device=device)],
                     dim=1
+                )
+                latent_img_token_mask = torch.cat(
+                    [latent_img_token_mask, torch.zeros([batch_size, 1], dtype=torch.int, device=device)],
+                    dim=1,
                 )
 
             with torch.cuda.amp.autocast(enabled=self.precision == "fp16"):

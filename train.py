@@ -27,6 +27,51 @@ from OmniMod.processors import *
 from OmniMod.runners import *
 from OmniMod.tasks import *
 
+
+DATASETS = {
+    "vqav2": {
+        "image_train": {
+            "image_path": "/home/csalt/Haider/DVLM/Download-Datasets/VQAv2/train2014",
+            "ann_path": "/home/csalt/Haider/DVLM/datasets_image/VQAv2/annotation/train_data.json"
+        },
+        "image_val": {
+            "image_path": "/home/csalt/Haider/DVLM/Download-Datasets/VQAv2/train2014",
+            "ann_path": "/home/csalt/Haider/DVLM/datasets_image/VQAv2/annotation/train_data.json"
+        },
+    },
+    "scienceqa" : {
+        "image_train" : {
+            "image_path" : "/home/csalt/Haider/DVLM/Download-Datasets/ScienceQA/train",
+            "ann_path" : "/home/csalt/Haider/DVLM/datasets_image/ScienceQA/annotation/train_data.json"
+        },
+        "image_val" : {
+            "image_path" : "/home/csalt/Haider/DVLM/Download-Datasets/ScienceQA/test",
+            "ann_path" : "/home/csalt/Haider/DVLM/datasets_image/ScienceQA/annotation/test_data.json"
+        },
+    },
+    "mmmu" : {
+        "image_train" : {
+            "image_path" : "/home/csalt/Haider/DVLM/datasets_image/MMMU/images",
+            "ann_path" : "/home/csalt/Haider/DVLM/datasets_image/MMMU/annotation/dev_data.json"
+        },
+        "image_val" : {
+            "image_path" : "/home/csalt/Haider/DVLM/datasets_image/MMMU/images",
+            "ann_path" : "/home/csalt/Haider/DVLM/datasets_image/MMMU/annotation/validation_data.json"
+        },
+    },
+    "mmstar" : {
+        "image_train" : {
+            "image_path" : "/home/csalt/Haider/DVLM/datasets_image/MMStar/images",
+            "ann_path" : "/home/csalt/Haider/DVLM/datasets_image/MMStar/annotation/val_data.json"
+        },
+        "image_val" : {
+            "image_path" : "/home/csalt/Haider/DVLM/datasets_image/MMStar/images",
+            "ann_path" : "/home/csalt/Haider/DVLM/datasets_image/MMStar/annotation/val_data.json"
+        },
+    },
+}
+
+
 def list_of_str(arg):
     return list(map(str, arg.split(',')))
 
@@ -36,6 +81,21 @@ def parse_args():
     parser.add_argument("--cfg-path", required=True, help="path to train configuration file.")
     parser.add_argument("--cfg-eval-path", required=False, help="path to evaluation configuration file.")
     parser.add_argument("--eval-dataset", type=list_of_str, default='video_val', help="dataset to evaluate")
+    parser.add_argument("--swap-order", action='store_true', help="whether to swap the order of image and text input.")
+    parser.add_argument("--coconut", action='store_true', help="use coconut reasoning.")
+    parser.add_argument("--multinut", action='store_true', help="use multimodal coconut reasoning.")
+    parser.add_argument("--output-dir", type=str, default="outputs", help="directory to save the results.")
+    parser.add_argument("--max-epoch", type=int, default=10, help="maximum number of training epochs.")
+    parser.add_argument("--warmup-steps", type=int, default=5, help="number of warmup steps for learning rate scheduler.")
+    parser.add_argument("--iters-per-epoch", type=int, default=37, help="number of iterations per epoch.")
+    parser.add_argument("--job-name", type=str, default="OmniMod_job", help="name of the training job.")
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        required=True,
+        choices=sorted(DATASETS.keys()),
+        help="dataset to use (must be one of the keys in DATASETS)",
+    )
     parser.add_argument(
         "--options",
         nargs="+",
@@ -75,12 +135,39 @@ def main():
     args = parse_args()
     cfg = Config(args)
 
+    
+    if args.swap_order:
+        cfg.build_info.swap_order = True
+        
+    if args.coconut:
+        cfg.model.use_coconut = True
+    if args.multinut:
+        cfg.model.use_multimodal_coconut = True
+    
+    if args.dataset not in DATASETS:
+        raise ValueError(
+            f"Unknown dataset '{args.dataset}'. Available: {', '.join(sorted(DATASETS.keys()))}"
+        )
+        
+    if "image_train" in cfg.datasets_cfg and "build_info" in cfg.datasets_cfg.image_train:
+        cfg.datasets_cfg.image_train.build_info.dataset_name = args.dataset
+        cfg.datasets_cfg.image_train.build_info.image_path = DATASETS[args.dataset]["image_train"]["image_path"]
+        cfg.datasets_cfg.image_train.build_info.ann_path = DATASETS[args.dataset]["image_train"]["ann_path"]
+    else:
+        raise KeyError("Config is missing datasets.image_train.build_info")
+    
+    cfg.run_cfg.output_dir = args.output_dir
+    cfg.run_cfg.job_name = args.job_name
+    cfg.run_cfg.warmup_steps = args.warmup_steps
+    cfg.run_cfg.iters_per_epoch = args.iters_per_epoch
+    cfg.run_cfg.max_epoch = args.max_epoch
+    
     print(cfg)
 
     init_distributed_mode(cfg.run_cfg)
     setup_seeds(cfg)
 
-    # set after init_distributed_mode() to only log on master.
+    # # set after init_distributed_mode() to only log on master.
     setup_logger()
     cfg.pretty_print()
 
@@ -88,10 +175,10 @@ def main():
     datasets = task.build_datasets(cfg)
     model = task.build_model(cfg)
 
-    if cfg.run_cfg.wandb_log:
-        wandb.login(key=cfg.run_cfg.wandb_token)
-        wandb.init(project="ars2text", name=cfg.run_cfg.job_name)
-        wandb.watch(model)
+    # if cfg.run_cfg.wandb_log:
+    #     wandb.login(key=cfg.run_cfg.wandb_token)
+    #     wandb.init(project="ars2text", name=cfg.run_cfg.job_name)
+    #     wandb.watch(model)
 
     runner = get_runner_class(cfg)(
         cfg=cfg, job_id=job_id, task=task, model=model, datasets=datasets

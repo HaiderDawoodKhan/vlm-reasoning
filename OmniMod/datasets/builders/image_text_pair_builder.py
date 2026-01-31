@@ -48,6 +48,7 @@ class ImageInstructionBuilder(BaseDatasetBuilder):
             audio_dir=build_info.audio_path,
             ann_path=build_info.ann_path,
             image_root=build_info.image_path,
+            swap_order=build_info.swap_order
         )
 
         return datasets
