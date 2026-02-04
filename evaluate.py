@@ -1,4 +1,5 @@
 import os
+import glob
 import argparse
 import json
 import logging
@@ -83,6 +84,10 @@ def parse_args():
     parser.add_argument("--swap-order", action='store_true', help="whether to swap the order of image and text input.")
     parser.add_argument("--coconut", action='store_true', help="use coconut reasoning.")
     parser.add_argument("--multinut", action='store_true', help="use multimodal coconut reasoning.")
+    parser.add_argument("--modified-multinut", action='store_true', help="use modified multimodal coconut reasoning.")
+    parser.add_argument("--pretrained-ckpt", action='store_true', help="use multimodal coconut reasoning.")
+    parser.add_argument("--ckpt-dir", type=str, required=False, help="path to checkpoint directory to resume training from.")
+    parser.add_argument("--ckpt", type=str, required=False, help="path to checkpoint to resume training from.")
     parser.add_argument("--output-dir", type=str, default="outputs", help="directory to save the results.")
     parser.add_argument(
         "--dataset",
@@ -121,21 +126,82 @@ def init_model(cfg):
     logging.info('Initialization Finished')
     return model, vis_processor, text_processor, audio_processor, vis_processor_cfg.name
 
+def get_checkpoint(ckpt_dir: str) -> str:
+    ckpt_dir = os.path.expanduser(ckpt_dir)
+    print(ckpt_dir)
+    if not os.path.isdir(ckpt_dir):
+        raise FileNotFoundError(f"Checkpoint base directory not found: {ckpt_dir}")
+
+    # Pick newest run subfolder inside ckpt_dir (prefer numeric names like timestamps)
+    run_dirs = [
+        os.path.join(ckpt_dir, d)
+        for d in os.listdir(ckpt_dir)
+        if os.path.isdir(os.path.join(ckpt_dir, d))
+    ]
+    if not run_dirs:
+        raise FileNotFoundError(f"No run subdirectories found in: {ckpt_dir}")
+
+    def run_sort_key(p: str):
+        name = os.path.basename(p)
+        if name.isdigit():
+            return (1, int(name))
+        return (0, os.path.getmtime(p))
+
+    run_dir = sorted(run_dirs, key=run_sort_key)[-1]
+
+    # Find checkpoints in that run directory
+    ckpt_paths = glob.glob(os.path.join(run_dir, "*.pth"))
+    if not ckpt_paths:
+        raise FileNotFoundError(f"No .pth checkpoints found in: {run_dir}")
+
+    def ckpt_sort_key(p: str):
+        base = os.path.basename(p)
+        stem = os.path.splitext(base)[0]
+        try:
+            step = int(stem.split("_")[-1])  # checkpoint_123 -> 123
+            return (1, step)
+        except Exception:
+            return (0, os.path.getmtime(p))
+
+    return sorted(ckpt_paths, key=ckpt_sort_key)[-1]
+    
+
 def evaluate(args):
+    # Mark this process as an evaluation entrypoint.
+    # Language-model wrappers use this to ensure logits are not force-cast to fp32.
+    os.environ["OMNIMOD_RUN_MODE"] = "eval"
     cfg = Config(args)
     
+    if args.ckpt and args.ckpt_dir:
+        raise ValueError("Cannot use both ckpt and ckpt_dir at the same time.")
+    
+    if args.ckpt:
+        cfg.model_cfg.ckpt = args.ckpt
+        
+    if args.ckpt_dir:
+        cfg.model_cfg.ckpt = get_checkpoint(args.ckpt_dir)
+        
     reasoning_string = "no_reasoning"
     if args.coconut:
         cfg.model_cfg.use_coconut = True
         reasoning_string = "coconut"
     else:
         cfg.model_cfg.use_coconut = False
-        
+    
+    if args.multinut and args.modified_multinut:
+        raise ValueError("Cannot use both multinut and modified_multinut at the same time.")
+    
     if args.multinut:
         cfg.model_cfg.use_multimodal_coconut = True
         reasoning_string = "multinut"
     else:
         cfg.model_cfg.use_multimodal_coconut = False
+        
+    if args.modified_multinut:
+        cfg.model_cfg.use_modified_multinut_with_attention = True
+        reasoning_string = "modified_multinut"
+    else:
+        cfg.model_cfg.use_modified_multinut_with_attention = False
     
     model, vis_processor, text_processor, audio_processor, vis_processor_name = init_model(cfg)
     model.eval()
@@ -150,8 +216,10 @@ def evaluate(args):
         swap_order = True
         swap_order_string = "swpd_ord"
         
-    
-
+    pretrained_string = ""
+    if args.pretrained_ckpt:
+        pretrained_string = "_pretrained"
+        
     if args.dataset not in DATASETS:
         raise ValueError(
             f"Unknown dataset '{args.dataset}'. Available: {', '.join(sorted(DATASETS.keys()))}"
@@ -238,7 +306,7 @@ def evaluate(args):
         os.makedirs(metrics_dir, exist_ok=True)
 
         save_path = os.path.join(
-            outputs_dir, f"output_{dataset_name}_{reasoning_string}_{swap_order_string}.json"
+            outputs_dir, f"output_{dataset_name}_{reasoning_string}_{swap_order_string}{pretrained_string}.json"
         )
 
         with open(save_path, "w") as jsonfile:
@@ -262,7 +330,7 @@ def evaluate(args):
 
             metrics_path = os.path.join(
                 metrics_dir,
-                f"metrics_output_{dataset_name}_{reasoning_string}_{swap_order_string}.json",
+                f"metrics_output_{dataset_name}_{reasoning_string}_{swap_order_string}{pretrained_string}.json",
             )
             with open(metrics_path, "w") as f:
                 json.dump(metrics, f, indent=4)

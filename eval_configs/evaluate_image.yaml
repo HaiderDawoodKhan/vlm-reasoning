@@ -16,6 +16,7 @@ model:
   bits: 8
   use_coconut: false
   use_multimodal_coconut: false
+  use_modified_multinut_with_attention: false
   num_latent_thoughts: 5
   coconut_discount_rate: 1.0
 datasets:
@@ -42,7 +43,7 @@ evaluation_datasets:
     ann_path: /home/csalt/Haider/DVLM/datasets_image/MMMU/annotation/dev_data.json
     audio_path: None
     prompt_test: ''
-    batch_size: 3
+    batch_size: 1
     max_new_tokens: 50
     temperature: 0.1
     top_p: 0.9

@@ -1,4 +1,6 @@
 import math
+import os
+import sys
 from typing import List, Optional, Tuple, Union
 
 import torch
@@ -12,6 +14,18 @@ from transformers.models.llama.modeling_llama import LlamaForCausalLM as LlamaFo
 
 
 class LlamaForCausalLM3(LlamaForCausalLMOrig):
+
+    def _omnimod_run_mode(self) -> Optional[str]:
+        mode = os.environ.get("OMNIMOD_RUN_MODE")
+        if mode:
+            return mode.strip().lower()
+
+        argv_lower = " ".join(sys.argv).lower()
+        if "evaluate.py" in argv_lower:
+            return "eval"
+        if "train.py" in argv_lower:
+            return "train"
+        return None
 
     @add_start_docstrings_to_model_forward(LLAMA_INPUTS_DOCSTRING)
     @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
@@ -83,7 +97,10 @@ class LlamaForCausalLM3(LlamaForCausalLMOrig):
             logits = torch.cat(logits, dim=-1)
         else:
             logits = self.lm_head(hidden_states)
-        logits = logits.float()
+
+        run_mode = self._omnimod_run_mode()
+        if self.training and run_mode != "eval":
+            logits = logits.float()
 
         loss = None
         if labels is not None:

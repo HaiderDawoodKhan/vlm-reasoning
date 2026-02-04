@@ -18,7 +18,8 @@ model:
   freeze_audio: True
   use_coconut: False  # Enable LatentReasoning reasoning
   use_multimodal_coconut: False  # Enable multimodal LatentReasoning (approach 2)
-  num_latent_thoughts: 1  # Number of latent thoughts (n)
+  use_modified_multinut_with_attention: False
+  num_latent_thoughts: 5  # Number of latent thoughts (n)
   coconut_discount_rate: 1.0  # discount/encourage rate (γ = 0.9 for discounting, γ = 1.1 for encouraging)
   mu: 0.3 # Weight auxiliary loss
 

@@ -4,10 +4,25 @@ from transformers.models.mistral.modeling_mistral import MISTRAL_INPUTS_DOCSTRIN
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from typing import List, Optional, Tuple, Union
 from transformers.cache_utils import Cache
+import os
+import sys
 import torch
 from torch.nn import CrossEntropyLoss
 
 class MistralForCausalLM(MistralForCausalLMOrig):
+
+    def _omnimod_run_mode(self) -> Optional[str]:
+        mode = os.environ.get("OMNIMOD_RUN_MODE")
+        if mode:
+            return mode.strip().lower()
+
+        argv_lower = " ".join(sys.argv).lower()
+        if "evaluate.py" in argv_lower:
+            return "eval"
+        if "train.py" in argv_lower:
+            return "train"
+        return None
+
     @add_start_docstrings_to_model_forward(MISTRAL_INPUTS_DOCSTRING)
     @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
     def forward(
@@ -71,7 +86,10 @@ class MistralForCausalLM(MistralForCausalLMOrig):
 
         hidden_states = outputs[0]
         logits = self.lm_head(hidden_states)
-        logits = logits.float()
+
+        run_mode = self._omnimod_run_mode()
+        if self.training and run_mode != "eval":
+            logits = logits.float()
 
         loss = None
         if labels is not None:

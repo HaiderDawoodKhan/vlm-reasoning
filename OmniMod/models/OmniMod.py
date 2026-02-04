@@ -42,6 +42,7 @@ class OmniMod(OmniModBase):
             device_8bit=0,
             use_coconut=False,
             use_multimodal_coconut=False,
+            use_modified_multinut_with_attention=False,
             num_latent_thoughts=0,
             coconut_discount_rate=1.0,
             mu=0.3, # Weight auxiliary loss
@@ -70,6 +71,7 @@ class OmniMod(OmniModBase):
             lora_dropout=lora_dropout,
             use_coconut=use_coconut,
             use_multimodal_coconut=use_multimodal_coconut,
+            use_modified_multinut_with_attention=use_modified_multinut_with_attention,
             num_latent_thoughts=num_latent_thoughts,
             coconut_discount_rate=coconut_discount_rate,
             mu=mu
